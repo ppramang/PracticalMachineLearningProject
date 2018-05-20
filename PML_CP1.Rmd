@@ -1,0 +1,140 @@
+---
+title: "Practical Machine Learning - Cource Project"
+author: "Panagiotis Pramangioulis"
+date: "May 18, 2018"
+output:
+  html_document:
+    self_contained: no
+  word_document: default
+---
+
+##1. Executive Summary
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website [here](http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har ).
+
+The goal of this project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set. We used many of the other variables to predict with. Through this report the reader will find a description on how we built the model, how we used the cross validation to validate our model, information about the expected out of sample error, as well as why we made specific choices the choices. As a final step, we used our prediction model to predict 20 different test cases with the main purpose to check the robustness of the.
+
+
+##2. Exploring and Preparing the Data
+
+###2.1 Data Loading and Overview
+
+The original dataset has been splitted already in ["train"](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv) and ["test"](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv) set. The main source of the data is:  
+
+**Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. "Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13)". Stuttgart, Germany: ACM SIGCHI, 2013**  
+
+Description of the data:
+
+"Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E).
+
+Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes. Participants were supervised by an experienced weight lifter to make sure the execution complied to the manner they were supposed to simulate. The exercises were performed by six male participants aged between 20-28 years, with little weight lifting experience. We made sure that all participants could easily simulate the mistakes in a safe and controlled manner by using a relatively light dumbbell (1.25kg)."
+
+####2.1.1 Loading Neccessary Libraries
+
+As a first step, we will load the necessary libraries that we will need to conduct the exploratory analysis and data cleaning as well as the final modelling. In addition, we will make sure that reproducibility of our result is secured by setting and appropriate seed
+
+```{r}
+library(caret)
+library(randomForest)
+library(corrplot)
+
+set.seed(161019) #for reproducibility
+```
+
+####2.1.2 Loading the Data
+
+As a next step we will load the _training_ and _testing datasets_ from the provided URLs. In sequence, we will subset the _training_ data into "train" (70% of the initial dataset) and "validation" (rest 30% of the initial dataset). The _testing_ dataset will be used at the end of our analysis in order to predict the extra 20 cases.
+
+```{r}
+#Assigning the dataset URLs to a name
+Url_training <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+Url_testing  <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+#Reading the datasets from the URLs and assigning each to a name
+training <- read.csv(url(Url_training))
+testing  <- read.csv(url(Url_testing))
+
+#Subsetting the training dataset in training and test subset
+inTrain  <- createDataPartition(training$classe, p=0.70, list=FALSE)
+TrainSet <- training[inTrain, ]
+ValidSet  <- training[-inTrain, ]
+
+#To check what eacxh data contains
+str(TrainSet)
+str(ValidSet)
+```
+
+####2.1.3 Cleaning the Data
+
+Both train and test subsets are having enough observations to support a proper analysis; however, they both contain a lot of missing values as well as may be unnecesssary variables ( Near Zero Variance and identification variables). For this reason, it is rendered necessary to apply a proper data cleaning, by removing those variables which contain a lot missing values as well those that are not inofrmative for our analysis (Near Zero Variance variables).
+
+```{r}
+#Removing variables that are canditates for Nearly Zero Variance
+NZV <- nearZeroVar(TrainSet)
+TrainSet <- TrainSet[, -NZV]
+ValidSet  <- ValidSet[, -NZV]
+
+
+#Removing variables that are having a lot of missing values
+manyNAs    <- sapply(TrainSet, function(x) mean(is.na(x))) > 0.95
+TrainSet <- TrainSet[, manyNAs==FALSE]
+ValidSet  <- ValidSet[, manyNAs==FALSE]
+
+#Removing Identification variables
+TrainSet <- TrainSet[, -(1:5)]
+ValidSet  <- ValidSet[, -(1:5)]
+dim(TrainSet)
+dim(ValidSet)
+```
+
+####2.1.4 Exploring the Data
+
+Before proceeding to our main analysis it is rendered necessary to identify whether there are dependencies existing between the variables. For this reason, we will conduct a multiple correlation analysis.
+
+```{r}
+corMatrix <- cor(TrainSet[, -54])
+corrplot(corMatrix, order = "FPC", method = "color", type = "lower", 
+         tl.cex = 0.8, tl.col = rgb(0, 0, 0))
+```
+
+From the correlation plot above we can observe that there are a few pair of varibales which are showed to be quite significantly correlated (darker blue and darker red squares). At this pointed, it would necessary to denote that we could apply a "Dimension Reduction" technique (e.g. Principal Component Analysis or Factor Analysis) to reduce the process time of the machine learning algorithm on a later stage, but we choose to leave this part out of the scope of the specific analysis.
+
+##3. Main Analysis (Predictive Modelling/ Machine learning)
+
+Within this section we will apply the Random Forest on the "train" subset of the  _training_ dataset and later apply it on the "validation" suset to perform a cross Validation test, targeting to identify the prediction accuaracy of the applied random forest model. If the accuracy level is satisfying, we will proceed on applying the model to our _testing_ dataset. 
+
+###3.1 Training the Random Forest model
+
+We train a model using random forest with a cross validation of 3 folds to avoid overfitting
+
+```{r}
+model_RF <- train(classe ~., method="rf", data=TrainSet, trControl=trainControl(method='cv', number=3, verboseIter=FALSE))
+model_RF$finalModel
+```
+
+###3.2 Cross Validating the Random Forest Model
+
+In this section, we will apply the previously trained Random Forest model on the "validation" subset in order to check the accuracy of the prediction. Apart from the relative test metrics on thi smatter, we will produce proper visualization to show the accuracy of the trained random Forest model.
+
+```{r}
+#Cross Validtaion Test/ metrics
+predictRF <- predict(model_RF, newdata=ValidSet)
+confMatRF <- confusionMatrix(predictRF, ValidSet$classe)
+confMatRF
+
+#Cross Validation Visualization
+plot(confMatRF$table, col = confMatRF$byClass, 
+     main = paste("Random Forest - Accuracy =",
+                  round(confMatRF$overall['Accuracy'], 4)))
+```
+
+From the graph above, we can observe that the trained model provides as with an high level accuracy (99.6%), while the estinated out-of-sample error is 0.4%. Based on this result, we can proceed on applying the trained and now validated model on the _testing_ set.
+
+###3.3 Applying the Trained and Validated Model on the Test data
+
+In this section we will apply the Random Forest model to predict the 20 quiz results (testing dataset) as shown below.
+
+```{r}
+pred_RF_final <- predict(model_RF, newdata=testing)
+pred_RF_final
+````
